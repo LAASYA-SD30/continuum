@@ -1,59 +1,33 @@
 from groq import Groq
-from supabase import create_client
 import os
 import json
+import requests
 from dotenv import load_dotenv
-from datetime import datetime, timezone
-from sentence_transformers import SentenceTransformer
-import numpy as np
 
 load_dotenv()
 
-supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 claude = Groq(api_key=os.getenv("GROQ_API_KEY"))
-embedder = SentenceTransformer('all-MiniLM-L6-v2')
 
-DEVELOPER_ID = "chat_demo_user"
+API_BASE = "http://127.0.0.1:8000"
+API_KEY = "test-key-123"
+HEADERS = {"x-api-key": API_KEY}
 
 def save_memory(fact_text):
-    new_fact = {
-        "developer_id": DEVELOPER_ID,
+    payload = {
         "fact": fact_text,
         "source": "chat_demo",
         "confidence": 0.8,
         "pinned": False,
-        "expires_at": None,
-        "embedding": embedder.encode(fact_text).tolist()
+        "expires_at": None
     }
-    supabase.table("memories").insert(new_fact).execute()
+    requests.post(f"{API_BASE}/write", json=payload, headers=HEADERS)
 
 def search_memories(query):
-    now = datetime.now(timezone.utc).isoformat()
-    all_facts = supabase.table("memories") \
-        .select("*") \
-        .eq("developer_id", DEVELOPER_ID) \
-        .or_(f"expires_at.is.null,expires_at.gt.{now},pinned.eq.true") \
-        .execute()
+    response = requests.get(f"{API_BASE}/search", params={"query": query}, headers=HEADERS)
+    return response.json()
 
-    query_embedding = embedder.encode(query)
-
-    results = []
-    for row in all_facts.data:
-        if row.get("embedding"):
-            raw_embedding = row["embedding"]
-            if isinstance(raw_embedding, str):
-                raw_embedding = json.loads(raw_embedding)
-            fact_embedding = np.array(raw_embedding, dtype=float)
-            similarity = np.dot(query_embedding, fact_embedding) / (
-                np.linalg.norm(query_embedding) * np.linalg.norm(fact_embedding)
-            )
-            results.append({**row, "similarity": float(similarity)})
-
-    results.sort(key=lambda x: x["similarity"], reverse=True)
-    return results[:3]
-
-def extract_and_save_facts(user_message):
-    prompt = f"""Read this message and extract any personal facts, preferences, or details worth remembering about the user. Return ONLY a JSON list of short fact strings, nothing else. If there is nothing worth remembering, return an empty list [].
+def extract_and_save_facts(user_message, retry=True):
+    prompt = f"""Read this message and extract any personal facts, preferences, or details worth remembering about the user. Return ONLY a JSON list of short fact strings, nothing else — no explanation, no markdown formatting. If there is nothing worth remembering, return an empty list [].
 
 Message: "{user_message}"
 
@@ -65,14 +39,23 @@ Example output: ["User prefers tea over coffee", "User is a final-year AI/ML stu
         messages=[{"role": "user", "content": prompt}]
     )
 
-    raw_output = response.choices[0].message.content
+    raw_output = response.choices[0].message.content.strip()
+
+    if raw_output.startswith("```"):
+        raw_output = raw_output.strip("`")
+        if raw_output.startswith("json"):
+            raw_output = raw_output[4:]
+        raw_output = raw_output.strip()
+
     try:
         facts = json.loads(raw_output)
         for fact in facts:
             save_memory(fact)
         return facts
     except Exception as e:
-        print(f"[DEBUG] Extraction failed: {e}\n")
+        if retry:
+            return extract_and_save_facts(user_message, retry=False)
+        print(f"[DEBUG] Extraction failed after retry: {e}\n")
         return []
 
 def chat():

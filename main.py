@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, Depends
 from pydantic import BaseModel
 from supabase import create_client
 from typing import Optional
@@ -14,8 +14,17 @@ app = FastAPI()
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 embedder = SentenceTransformer('all-MiniLM-L6-v2')
 
+API_KEYS = {
+    "test-key-123": "chat_demo_user",
+    "search-test-key": "search_test",
+}
+
+def verify_key(x_api_key: str = Header(...)):
+    if x_api_key not in API_KEYS:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return API_KEYS[x_api_key]
+
 class Fact(BaseModel):
-    developer_id: str
     fact: str
     source: str
     confidence: float
@@ -23,10 +32,10 @@ class Fact(BaseModel):
     expires_at: Optional[datetime] = None
 
 @app.post("/write")
-def write_fact(fact: Fact):
+def write_fact(fact: Fact, developer_id: str = Depends(verify_key)):
     existing = supabase.table("memories") \
         .select("*") \
-        .eq("developer_id", fact.developer_id) \
+        .eq("developer_id", developer_id) \
         .execute()
 
     for row in existing.data:
@@ -44,13 +53,14 @@ def write_fact(fact: Fact):
             }
 
     fact_data = json.loads(fact.json())
+    fact_data["developer_id"] = developer_id
     fact_data["embedding"] = embedder.encode(fact.fact).tolist()
 
     result = supabase.table("memories").insert(fact_data).execute()
     return {"status": "saved", "data": result.data}
 
-@app.get("/retrieve/{developer_id}")
-def retrieve_facts(developer_id: str):
+@app.get("/retrieve")
+def retrieve_facts(developer_id: str = Depends(verify_key)):
     now = datetime.now(timezone.utc).isoformat()
     result = supabase.table("memories") \
         .select("*") \
@@ -59,8 +69,8 @@ def retrieve_facts(developer_id: str):
         .execute()
     return result.data
 
-@app.get("/search/{developer_id}")
-def search_facts(developer_id: str, query: str):
+@app.get("/search")
+def search_facts(query: str, developer_id: str = Depends(verify_key)):
     now = datetime.now(timezone.utc).isoformat()
     all_facts = supabase.table("memories") \
         .select("*") \
@@ -88,16 +98,15 @@ def search_facts(developer_id: str, query: str):
 class ConflictResolution(BaseModel):
     existing_fact_id: str
     new_fact: str
-    developer_id: str
     source: str
     confidence: float
 
 @app.post("/resolve-conflict")
-def resolve_conflict(resolution: ConflictResolution):
+def resolve_conflict(resolution: ConflictResolution, developer_id: str = Depends(verify_key)):
     supabase.table("memories").delete().eq("id", resolution.existing_fact_id).execute()
 
     new_fact = {
-        "developer_id": resolution.developer_id,
+        "developer_id": developer_id,
         "fact": resolution.new_fact,
         "source": resolution.source,
         "confidence": resolution.confidence,
@@ -109,8 +118,8 @@ def resolve_conflict(resolution: ConflictResolution):
     return {"status": "updated", "data": result.data}
 
 @app.delete("/memory/{fact_id}")
-def delete_fact(fact_id: str):
-    result = supabase.table("memories").delete().eq("id", fact_id).execute()
+def delete_fact(fact_id: str, developer_id: str = Depends(verify_key)):
+    result = supabase.table("memories").delete().eq("id", fact_id).eq("developer_id", developer_id).execute()
     return {"status": "deleted", "data": result.data}
 
 class FactUpdate(BaseModel):
@@ -120,14 +129,15 @@ class FactUpdate(BaseModel):
     expires_at: Optional[datetime] = None
 
 @app.patch("/memory/{fact_id}")
-def update_fact(fact_id: str, update: FactUpdate):
+def update_fact(fact_id: str, update: FactUpdate, developer_id: str = Depends(verify_key)):
     update_data = json.loads(update.json(exclude_none=True))
     if update.fact is not None:
         update_data["embedding"] = embedder.encode(update.fact).tolist()
-    result = supabase.table("memories").update(update_data).eq("id", fact_id).execute()
+    result = supabase.table("memories").update(update_data).eq("id", fact_id).eq("developer_id", developer_id).execute()
     return {"status": "updated", "data": result.data}
-@app.get("/export/{developer_id}")
-def export_memories(developer_id: str):
+
+@app.get("/export")
+def export_memories(developer_id: str = Depends(verify_key)):
     result = supabase.table("memories") \
         .select("id, fact, source, confidence, pinned, expires_at, created_at") \
         .eq("developer_id", developer_id) \

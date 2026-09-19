@@ -1,28 +1,21 @@
-from supabase import create_client
-import os
-from dotenv import load_dotenv
-from sentence_transformers import SentenceTransformer
+import requests
 
-load_dotenv()
-
-supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
-embedder = SentenceTransformer('all-MiniLM-L6-v2')
-
-DEVELOPER_ID = "chat_demo_user"
+API_BASE = "http://127.0.0.1:8000"
+API_KEY = "test-key-123"
+HEADERS = {"x-api-key": API_KEY}
 
 def book_slot(day, time):
     fact_text = f"User booked a meeting slot on {day} at {time}"
-    new_fact = {
-        "developer_id": DEVELOPER_ID,
+    payload = {
         "fact": fact_text,
         "source": "scheduler_tool",
         "confidence": 1.0,
         "pinned": False,
-        "expires_at": None,
-        "embedding": embedder.encode(fact_text).tolist()
+        "expires_at": None
     }
-    supabase.table("memories").insert(new_fact).execute()
+    response = requests.post(f"{API_BASE}/write", json=payload, headers=HEADERS)
     print(f"Scheduler saved: {fact_text}")
+    print(f"Response: {response.json()}")
 
 if __name__ == "__main__":
     print("Scheduler Tool Demo (not a chatbot — simulates a booking action)\n")
